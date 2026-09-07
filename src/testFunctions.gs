@@ -72,6 +72,7 @@ function testAll() {
   testInputTokenWarning();
   if (_shouldRunModelLabel("gemini")) {
     testGeminiInteractionRequestPayloads();
+    testGeminiBuiltInToolCallsAreNotDispatchedLocally();
     testGeminiFailedInteractionState();
     testGeminiInteractionThreading();
     testGeminiRetrieveLastInteractionId();
@@ -103,6 +104,44 @@ function _geminiTextResponse(id, text, status = "completed") {
     status,
     steps: text ? [{ type: "model_output", content: [{ type: "text", text }] }] : []
   };
+}
+
+function testGeminiBuiltInToolCallsAreNotDispatchedLocally() {
+  GenAIApp.setGeminiAPIKey("mock-gemini-key");
+  _runSingleTest("Gemini built-in tool dispatch", "gemini", () => {
+    const requests = [];
+    const chat = GenAIApp.newChat().disableLogs(true);
+    const localFunction = GenAIApp.newFunction()
+      .setName("getWeather")
+      .setDescription("Get weather")
+      .addParameter("cityName", "string", "City name");
+    chat._apiCaller = _mockGeminiApiCaller([{
+      id: "file-search-interaction",
+      status: "completed",
+      steps: [
+        {
+          type: "function_call",
+          id: "built-in-file-search-call",
+          name: "google:file_search",
+          args: { queries: ["team demos"] }
+        },
+        {
+          type: "model_output",
+          content: [{ type: "text", text: "Team demos happen every Friday at 10 AM." }]
+        }
+      ]
+    }], requests);
+
+    chat.addMessage("When are team demos?").addFunction(localFunction);
+    const response = chat.run({ model: GEMINI_MODEL, max_tokens: TEST_MAX_TOKENS });
+    if (response !== "Team demos happen every Friday at 10 AM.") {
+      throw new Error("Gemini built-in file search was treated as a local function call");
+    }
+    if (requests.length !== 1) {
+      throw new Error("Built-in tool activity unexpectedly triggered a continuation request");
+    }
+    return "OK";
+  });
 }
 
 function testGeminiInteractionRequestPayloads() {
