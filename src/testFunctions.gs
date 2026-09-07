@@ -73,6 +73,7 @@ function testAll() {
   if (_shouldRunModelLabel("gemini")) {
     testGeminiInteractionRequestPayloads();
     testGeminiBuiltInToolCallsAreNotDispatchedLocally();
+    testGeminiGlobalFunctionCallsRemainEligible();
     testGeminiFailedInteractionState();
     testGeminiInteractionThreading();
     testGeminiRetrieveLastInteractionId();
@@ -139,6 +140,43 @@ function testGeminiBuiltInToolCallsAreNotDispatchedLocally() {
     }
     if (requests.length !== 1) {
       throw new Error("Built-in tool activity unexpectedly triggered a continuation request");
+    }
+    return "OK";
+  });
+}
+
+function testGeminiGlobalFunctionCallsRemainEligible() {
+  GenAIApp.setGeminiAPIKey("mock-gemini-key");
+  _runSingleTest("Gemini global function dispatch", "gemini", () => {
+    const requests = [];
+    const chat = GenAIApp.newChat().disableLogs(true);
+    const functionDeclaration = GenAIApp.newFunction()
+      .setName("getWeather")
+      .setDescription("Get weather")
+      .addParameter("cityName", "string", "City name");
+    chat._apiCaller = _mockGeminiApiCaller([
+      {
+        id: "function-interaction-1",
+        status: "completed",
+        steps: [{
+          type: "function_call",
+          id: "weather-call-1",
+          name: "getWeather",
+          args: { cityName: "Paris" }
+        }]
+      },
+      _geminiTextResponse("function-interaction-2", "It is 19°C in Paris.")
+    ], requests);
+
+    chat.addMessage("What's the weather in Paris?").addFunction(functionDeclaration);
+    const response = chat.run({ model: GEMINI_MODEL, max_tokens: TEST_MAX_TOKENS });
+    if (response !== "It is 19°C in Paris.") {
+      throw new Error("Gemini local function was not called");
+    }
+    if (requests.length !== 2
+      || requests[1].payload.input?.[0]?.name !== "getWeather"
+      || requests[1].payload.input?.[0]?.result?.[0]?.text !== "The weather in Paris is 19°C today.") {
+      throw new Error("Gemini local function result was not sent back to the model");
     }
     return "OK";
   });

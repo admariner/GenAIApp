@@ -655,10 +655,7 @@ const GenAIApp = (function () {
         if (tools.length > 0) {
           // Check if AI model wanted to call a function
           if (model.includes("gemini")) {
-            // Gemini reports server-side built-in tool activity (for example,
-            // `google:file_search`) as function_call steps too. Only locally
-            // execute calls whose names match functions registered on this chat.
-            const functionCalls = _extractGeminiFunctionCalls(responseMessage, tools);
+            const functionCalls = _extractGeminiFunctionCalls(responseMessage);
             if (functionCalls.length > 0) {
               contents = _handleGeminiToolCalls(responseMessage, tools, contents);
               // check if endWithResults or onlyReturnArguments
@@ -2145,7 +2142,7 @@ const GenAIApp = (function () {
     return part?.text || responseMessage?.output_text || null;
   }
 
-  function _extractGeminiFunctionCalls(responseMessage, tools) {
+  function _extractGeminiFunctionCalls(responseMessage) {
     const calls = [];
     const steps = responseMessage?.steps || [];
     steps.forEach(step => {
@@ -2157,7 +2154,7 @@ const GenAIApp = (function () {
       });
     });
     if (calls.length > 0) {
-      return _filterRegisteredGeminiFunctionCalls(calls, tools);
+      return _filterGeminiBuiltInFunctionCalls(calls);
     }
 
     // Backward-compatible fallback for legacy content-shaped responses.
@@ -2171,24 +2168,21 @@ const GenAIApp = (function () {
         });
       }
     });
-    return _filterRegisteredGeminiFunctionCalls(calls, tools);
+    return _filterGeminiBuiltInFunctionCalls(calls);
   }
 
   /**
-   * Filters Gemini function-call steps to functions that the caller registered.
-   * Gemini's Interactions API also represents server-executed built-in tools such
-   * as `google:file_search` as function calls; those must not be dispatched via
-   * the Apps Script global scope.
+   * Removes Gemini server-executed built-in tool steps from local function calls.
+   * Built-in functions use Google's reserved `google:` namespace and must not be
+   * dispatched through the Apps Script global scope. Other calls remain eligible
+   * for the existing dynamic lookup so globally defined functions continue to
+   * work even when their declaration metadata is unavailable at response time.
    *
    * @param {Array} calls - Function calls extracted from a Gemini response.
-   * @param {Array|undefined} tools - Locally registered function tools. When
-   * omitted, calls are returned unchanged for backward compatibility.
-   * @returns {Array} Calls that correspond to locally registered functions.
+   * @returns {Array} Calls that are not in Google's built-in namespace.
    */
-  function _filterRegisteredGeminiFunctionCalls(calls, tools) {
-    if (!Array.isArray(tools)) return calls;
-    const registeredNames = new Set(tools.map(tool => tool.function._toJson().name));
-    return calls.filter(call => registeredNames.has(call.name));
+  function _filterGeminiBuiltInFunctionCalls(calls) {
+    return calls.filter(call => !String(call.name || "").startsWith("google:"));
   }
 
   /**
@@ -2211,7 +2205,7 @@ const GenAIApp = (function () {
    * @returns {Object} - Tool continuation input and state flags for the Chat run loop.
    */
   function _handleGeminiToolCalls(responseMessage, tools, contents) {
-    const functionCalls = _extractGeminiFunctionCalls(responseMessage, tools);
+    const functionCalls = _extractGeminiFunctionCalls(responseMessage);
     const functionResults = [];
     let shouldEndWithResult = false;
     let onlyReturnArguments = null;
