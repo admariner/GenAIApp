@@ -72,6 +72,8 @@ function testAll() {
   testInputTokenWarning();
   if (_shouldRunModelLabel("gemini")) {
     testGeminiInteractionRequestPayloads();
+    testGeminiBuiltInToolCallsAreNotDispatchedLocally();
+    testGeminiGlobalFunctionCallsRemainEligible();
     testGeminiFailedInteractionState();
     testGeminiInteractionThreading();
     testGeminiRetrieveLastInteractionId();
@@ -103,6 +105,96 @@ function _geminiTextResponse(id, text, status = "completed") {
     status,
     steps: text ? [{ type: "model_output", content: [{ type: "text", text }] }] : []
   };
+}
+
+let geminiUnregisteredFunctionCallCount = 0;
+function unregisteredGeminiFunction() {
+  geminiUnregisteredFunctionCallCount++;
+}
+
+function testGeminiBuiltInToolCallsAreNotDispatchedLocally() {
+  GenAIApp.setGeminiAPIKey("mock-gemini-key");
+  _runSingleTest("Gemini built-in tool dispatch", "gemini", () => {
+    geminiUnregisteredFunctionCallCount = 0;
+    const requests = [];
+    const chat = GenAIApp.newChat().disableLogs(true);
+    const localFunction = GenAIApp.newFunction()
+      .setName("getWeather")
+      .setDescription("Get weather")
+      .addParameter("cityName", "string", "City name");
+    chat._apiCaller = _mockGeminiApiCaller([{
+      id: "file-search-interaction",
+      status: "completed",
+      steps: [
+        {
+          type: "function_call",
+          id: "built-in-file-search-call",
+          name: "google:file_search",
+          args: { queries: ["team demos"] }
+        },
+        {
+          type: "function_call",
+          id: "unregistered-global-call",
+          name: "unregisteredGeminiFunction",
+          args: {}
+        },
+        {
+          type: "model_output",
+          content: [{ type: "text", text: "Team demos happen every Friday at 10 AM." }]
+        }
+      ]
+    }], requests);
+
+    chat.addMessage("When are team demos?").addFunction(localFunction);
+    const response = chat.run({ model: GEMINI_MODEL, max_tokens: TEST_MAX_TOKENS });
+    if (response !== "Team demos happen every Friday at 10 AM.") {
+      throw new Error("Gemini built-in file search was treated as a local function call");
+    }
+    if (requests.length !== 1) {
+      throw new Error("Built-in tool activity unexpectedly triggered a continuation request");
+    }
+    if (geminiUnregisteredFunctionCallCount !== 0) {
+      throw new Error("An unregistered global function was dispatched locally");
+    }
+    return "OK";
+  });
+}
+
+function testGeminiGlobalFunctionCallsRemainEligible() {
+  GenAIApp.setGeminiAPIKey("mock-gemini-key");
+  _runSingleTest("Gemini global function dispatch", "gemini", () => {
+    const requests = [];
+    const chat = GenAIApp.newChat().disableLogs(true);
+    const functionDeclaration = GenAIApp.newFunction()
+      .setName("getWeather")
+      .setDescription("Get weather")
+      .addParameter("cityName", "string", "City name");
+    chat._apiCaller = _mockGeminiApiCaller([
+      {
+        id: "function-interaction-1",
+        status: "completed",
+        steps: [{
+          type: "function_call",
+          id: "weather-call-1",
+          name: "getWeather",
+          args: { cityName: "Paris" }
+        }]
+      },
+      _geminiTextResponse("function-interaction-2", "It is 19°C in Paris.")
+    ], requests);
+
+    chat.addMessage("What's the weather in Paris?").addFunction(functionDeclaration);
+    const response = chat.run({ model: GEMINI_MODEL, max_tokens: TEST_MAX_TOKENS });
+    if (response !== "It is 19°C in Paris.") {
+      throw new Error("Gemini local function was not called");
+    }
+    if (requests.length !== 2
+      || requests[1].payload.input?.[0]?.name !== "getWeather"
+      || requests[1].payload.input?.[0]?.result?.[0]?.text !== "The weather in Paris is 19°C today.") {
+      throw new Error("Gemini local function result was not sent back to the model");
+    }
+    return "OK";
+  });
 }
 
 function testGeminiInteractionRequestPayloads() {

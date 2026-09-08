@@ -655,7 +655,7 @@ const GenAIApp = (function () {
         if (tools.length > 0) {
           // Check if AI model wanted to call a function
           if (model.includes("gemini")) {
-            const functionCalls = _extractGeminiFunctionCalls(responseMessage);
+            const functionCalls = _extractGeminiFunctionCalls(responseMessage, tools);
             if (functionCalls.length > 0) {
               contents = _handleGeminiToolCalls(responseMessage, tools, contents);
               // check if endWithResults or onlyReturnArguments
@@ -2142,7 +2142,7 @@ const GenAIApp = (function () {
     return part?.text || responseMessage?.output_text || null;
   }
 
-  function _extractGeminiFunctionCalls(responseMessage) {
+  function _extractGeminiFunctionCalls(responseMessage, tools) {
     const calls = [];
     const steps = responseMessage?.steps || [];
     steps.forEach(step => {
@@ -2153,7 +2153,9 @@ const GenAIApp = (function () {
         args: step.args || step.arguments || step.function?.arguments || step.functionCall?.args || {}
       });
     });
-    if (calls.length > 0) return calls;
+    if (calls.length > 0) {
+      return _filterGeminiBuiltInFunctionCalls(calls, tools);
+    }
 
     // Backward-compatible fallback for legacy content-shaped responses.
     const parts = responseMessage?.parts || [];
@@ -2166,7 +2168,24 @@ const GenAIApp = (function () {
         });
       }
     });
-    return calls;
+    return _filterGeminiBuiltInFunctionCalls(calls, tools);
+  }
+
+  /**
+   * Removes Gemini server-executed built-in tool steps from local function calls.
+   * Built-in functions use Google's reserved `google:` namespace and must not be
+   * dispatched through the Apps Script global scope. When registered tools are
+   * provided, calls must also match the registered function allowlist.
+   *
+   * @param {Array} calls - Function calls extracted from a Gemini response.
+   * @param {Array|undefined} tools - Locally registered function tools.
+   * @returns {Array} Calls eligible for local execution.
+   */
+  function _filterGeminiBuiltInFunctionCalls(calls, tools) {
+    const nonGoogleCalls = calls.filter(call => !String(call.name || "").startsWith("google:"));
+    if (!Array.isArray(tools)) return nonGoogleCalls;
+    const registeredNames = new Set(tools.map(tool => tool.function._toJson().name));
+    return nonGoogleCalls.filter(call => registeredNames.has(call.name));
   }
 
   /**
@@ -2189,7 +2208,7 @@ const GenAIApp = (function () {
    * @returns {Object} - Tool continuation input and state flags for the Chat run loop.
    */
   function _handleGeminiToolCalls(responseMessage, tools, contents) {
-    const functionCalls = _extractGeminiFunctionCalls(responseMessage);
+    const functionCalls = _extractGeminiFunctionCalls(responseMessage, tools);
     const functionResults = [];
     let shouldEndWithResult = false;
     let onlyReturnArguments = null;
