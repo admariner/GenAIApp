@@ -107,9 +107,15 @@ function _geminiTextResponse(id, text, status = "completed") {
   };
 }
 
+let geminiUnregisteredFunctionCallCount = 0;
+function unregisteredGeminiFunction() {
+  geminiUnregisteredFunctionCallCount++;
+}
+
 function testGeminiBuiltInToolCallsAreNotDispatchedLocally() {
   GenAIApp.setGeminiAPIKey("mock-gemini-key");
   _runSingleTest("Gemini built-in tool dispatch", "gemini", () => {
+    geminiUnregisteredFunctionCallCount = 0;
     const requests = [];
     const chat = GenAIApp.newChat().disableLogs(true);
     const localFunction = GenAIApp.newFunction()
@@ -127,6 +133,12 @@ function testGeminiBuiltInToolCallsAreNotDispatchedLocally() {
           args: { queries: ["team demos"] }
         },
         {
+          type: "function_call",
+          id: "unregistered-global-call",
+          name: "unregisteredGeminiFunction",
+          args: {}
+        },
+        {
           type: "model_output",
           content: [{ type: "text", text: "Team demos happen every Friday at 10 AM." }]
         }
@@ -140,6 +152,9 @@ function testGeminiBuiltInToolCallsAreNotDispatchedLocally() {
     }
     if (requests.length !== 1) {
       throw new Error("Built-in tool activity unexpectedly triggered a continuation request");
+    }
+    if (geminiUnregisteredFunctionCallCount !== 0) {
+      throw new Error("An unregistered global function was dispatched locally");
     }
     return "OK";
   });
